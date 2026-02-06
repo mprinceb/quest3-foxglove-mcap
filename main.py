@@ -1,17 +1,22 @@
+import argparse
+import json
+from pathlib import Path
+import numpy as np
+import cv2
+import pandas as pd
 from mcap_protobuf.writer import Writer
 from google.protobuf.timestamp_pb2 import Timestamp
-import numpy as np
-
-f = open("quest3.mcap", "wb")
-writer = Writer(f)
-
-
-import pandas as pd
 from foxglove_schemas_protobuf.Vector3_pb2 import Vector3
 from foxglove_schemas_protobuf.Quaternion_pb2 import Quaternion
 from foxglove_schemas_protobuf.FrameTransform_pb2 import FrameTransform
+from foxglove_schemas_protobuf.RawImage_pb2 import RawImage
+from foxglove_schemas_protobuf.CompressedImage_pb2 import CompressedImage
+from foxglove_schemas_protobuf.CameraCalibration_pb2 import CameraCalibration
 
-def ms_to_ns(ms): return int(ms) * 1_000_000
+
+def ms_to_ns(ms):
+    return int(ms) * 1_000_000
+
 
 def quat_to_matrix(q):
     x, y, z, w = q
@@ -26,6 +31,7 @@ def quat_to_matrix(q):
         ],
         dtype=float,
     )
+
 
 def matrix_to_quat(R):
     t = float(np.trace(R))
@@ -55,6 +61,7 @@ def matrix_to_quat(R):
         z = 0.25 * s
     return np.array([x, y, z, w], dtype=float)
 
+
 def swap_yz_transform(pos, quat):
     m = np.array(
         [
@@ -70,6 +77,7 @@ def swap_yz_transform(pos, quat):
     q2 = matrix_to_quat(r2)
     return p2, q2
 
+
 def set_timestamp(msg, ns):
     msg.timestamp.CopyFrom(
         Timestamp(
@@ -78,41 +86,35 @@ def set_timestamp(msg, ns):
         )
     )
 
-df = pd.read_csv("hmd_poses.csv")
 
-for _, r in df.iterrows():
-    ts = ms_to_ns(r["unix_time"])
+def write_tf(writer, hmd_csv):
+    df = pd.read_csv(hmd_csv)
+    for _, r in df.iterrows():
+        ts = ms_to_ns(r["unix_time"])
 
-    pos = np.array([r["pos_x"], r["pos_y"], r["pos_z"]], dtype=float)
-    quat = np.array([r["rot_x"], r["rot_y"], r["rot_z"], r["rot_w"]], dtype=float)
-    pos, quat = swap_yz_transform(pos, quat)
+        pos = np.array([r["pos_x"], r["pos_y"], r["pos_z"]], dtype=float)
+        quat = np.array([r["rot_x"], r["rot_y"], r["rot_z"], r["rot_w"]], dtype=float)
+        pos, quat = swap_yz_transform(pos, quat)
 
-    msg = FrameTransform(
-        parent_frame_id="world",
-        child_frame_id="hmd",
-        translation=Vector3(x=pos[0], y=pos[1], z=pos[2]),
-        rotation=Quaternion(x=quat[0], y=quat[1], z=quat[2], w=quat[3]),
-    )
-    set_timestamp(msg, ts)
-    writer.write_message("/tf", msg, log_time=ts, publish_time=ts)
-
-
-import glob, cv2
-import os
-import json
-from foxglove_schemas_protobuf.RawImage_pb2 import RawImage
-from foxglove_schemas_protobuf.CompressedImage_pb2 import CompressedImage
+        msg = FrameTransform(
+            parent_frame_id="world",
+            child_frame_id="hmd",
+            translation=Vector3(x=pos[0], y=pos[1], z=pos[2]),
+            rotation=Quaternion(x=quat[0], y=quat[1], z=quat[2], w=quat[3]),
+        )
+        set_timestamp(msg, ts)
+        writer.write_message("/tf", msg, log_time=ts, publish_time=ts)
 
 
 def first_timestamp_ns(folder, ext):
-    paths = sorted(glob.glob(os.path.join(folder, f"*.{ext}")))
+    paths = sorted(folder.glob(f"*.{ext}"))
     if not paths:
         return 0
-    ts_ms = int(os.path.basename(paths[0]).split(".")[0])
+    ts_ms = int(paths[0].stem)
     return ms_to_ns(ts_ms)
 
 
-def write_rgb(folder, raw_topic, compressed_topic, frame_id, image_format_json):
+def write_rgb(writer, folder, raw_topic, compressed_topic, frame_id, image_format_json):
     fmt = json.load(open(image_format_json))
     width = int(fmt["width"])
     height = int(fmt["height"])
@@ -127,8 +129,8 @@ def write_rgb(folder, raw_topic, compressed_topic, frame_id, image_format_json):
     uv_size = min(u_plane_size, v_plane_size)
     uv_expected = uv_row_stride * (height // 2)
 
-    for fpath in sorted(glob.glob(folder + "/*.yuv")):
-        ts = ms_to_ns(fpath.split("/")[-1].split(".")[0])
+    for fpath in sorted(folder.glob("*.yuv")):
+        ts = ms_to_ns(fpath.stem)
 
         data = np.fromfile(fpath, np.uint8)
         if data.size < y_size + 2 * uv_size:
@@ -179,11 +181,9 @@ def write_rgb(folder, raw_topic, compressed_topic, frame_id, image_format_json):
                 writer.write_message(compressed_topic, cmsg, log_time=ts, publish_time=ts)
 
 
-
-
-def write_depth(folder, topic, width):
-    for fpath in sorted(glob.glob(folder + "/*.raw")):
-        ts = ms_to_ns(fpath.split("/")[-1].split(".")[0])
+def write_depth(writer, folder, topic, width):
+    for fpath in sorted(folder.glob("*.raw")):
+        ts = ms_to_ns(fpath.stem)
 
         depth = np.fromfile(fpath, np.uint16)
 
@@ -202,16 +202,14 @@ def write_depth(folder, topic, width):
         set_timestamp(msg, ts)
         writer.write_message(topic, msg, log_time=ts, publish_time=ts)
 
-from foxglove_schemas_protobuf.CameraCalibration_pb2 import CameraCalibration
 
-
-def write_calib(json_path, topic, ts_ns):
+def write_calib(writer, json_path, topic, ts_ns):
     j = json.load(open(json_path))
 
     intr = j["intrinsics"]
     sensor = j["sensor"]["pixelArraySize"]
 
-    width  = sensor["width"]
+    width = sensor["width"]
     height = sensor["height"]
 
     fx, fy = intr["fx"], intr["fy"]
@@ -224,15 +222,15 @@ def write_calib(json_path, topic, ts_ns):
         distortion_model="plumb_bob",
         D=[0.0, 0.0, 0.0, 0.0, 0.0],  # Quest = no distortion
         K=[
-            fx, 0,  cx,
-            0,  fy, cy,
-            0,  0,  1
+            fx, 0, cx,
+            0, fy, cy,
+            0, 0, 1,
         ],
         R=[1, 0, 0, 0, 1, 0, 0, 0, 1],
         P=[
-            fx, 0,  cx, 0,
-            0,  fy, cy, 0,
-            0,  0,  1,  0
+            fx, 0, cx, 0,
+            0, fy, cy, 0,
+            0, 0, 1, 0,
         ],
     )
 
@@ -240,29 +238,67 @@ def write_calib(json_path, topic, ts_ns):
     writer.write_message(topic, msg, log_time=ts_ns, publish_time=ts_ns)
 
 
-write_rgb(
-    "left_camera_raw",
-    "/camera/left/image",
-    "/cam_left/compressed",
-    "camera_left",
-    "left_camera_image_format.json",
-)
-write_rgb(
-    "right_camera_raw",
-    "/camera/right/image",
-    "/cam_right/compressed",
-    "camera_right",
-    "right_camera_image_format.json",
-)
+def build_output_path(data_dir, out_name):
+    name = Path(out_name).name
+    if not name.endswith(".mcap"):
+        name = f"{name}.mcap"
+    out_dir = data_dir / "out"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir / name
 
-# write_depth("left_depth", "/depth/left/image", 320)
-# write_depth("right_depth", "/depth/right/image", 320)
 
-left_calib_ts = first_timestamp_ns("left_camera_raw", "yuv")
-right_calib_ts = first_timestamp_ns("right_camera_raw", "yuv")
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dir", required=True, help="Input data directory")
+    parser.add_argument("--out", required=True, help="Output file name")
+    args = parser.parse_args()
 
-write_calib("left_camera_characteristics.json", "/camera/left/calib", left_calib_ts)
-write_calib("right_camera_characteristics.json", "/camera/right/calib", right_calib_ts)
+    data_dir = Path(args.dir).expanduser().resolve()
+    if not data_dir.exists():
+        raise FileNotFoundError(f"Input directory not found: {data_dir}")
 
-writer.finish()
-f.close()
+    output_path = build_output_path(data_dir, args.out)
+    with open(output_path, "wb") as f:
+        writer = Writer(f)
+
+        write_tf(writer, data_dir / "hmd_poses.csv")
+        write_rgb(
+            writer,
+            data_dir / "left_camera_raw",
+            "/camera/left/image",
+            "/cam_left/compressed",
+            "camera_left",
+            data_dir / "left_camera_image_format.json",
+        )
+        write_rgb(
+            writer,
+            data_dir / "right_camera_raw",
+            "/camera/right/image",
+            "/cam_right/compressed",
+            "camera_right",
+            data_dir / "right_camera_image_format.json",
+        )
+
+        # write_depth(writer, data_dir / "left_depth", "/depth/left/image", 320)
+        # write_depth(writer, data_dir / "right_depth", "/depth/right/image", 320)
+
+        left_calib_ts = first_timestamp_ns(data_dir / "left_camera_raw", "yuv")
+        right_calib_ts = first_timestamp_ns(data_dir / "right_camera_raw", "yuv")
+        write_calib(
+            writer,
+            data_dir / "left_camera_characteristics.json",
+            "/camera/left/calib",
+            left_calib_ts,
+        )
+        write_calib(
+            writer,
+            data_dir / "right_camera_characteristics.json",
+            "/camera/right/calib",
+            right_calib_ts,
+        )
+
+        writer.finish()
+
+
+if __name__ == "__main__":
+    main()
