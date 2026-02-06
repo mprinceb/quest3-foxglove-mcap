@@ -1,5 +1,6 @@
 from mcap_protobuf.writer import Writer
 from google.protobuf.timestamp_pb2 import Timestamp
+import numpy as np
 
 f = open("quest3.mcap", "wb")
 writer = Writer(f)
@@ -11,6 +12,63 @@ from foxglove_schemas_protobuf.Quaternion_pb2 import Quaternion
 from foxglove_schemas_protobuf.FrameTransform_pb2 import FrameTransform
 
 def ms_to_ns(ms): return int(ms) * 1_000_000
+
+def quat_to_matrix(q):
+    x, y, z, w = q
+    xx, yy, zz = x * x, y * y, z * z
+    xy, xz, yz = x * y, x * z, y * z
+    wx, wy, wz = w * x, w * y, w * z
+    return np.array(
+        [
+            [1 - 2 * (yy + zz), 2 * (xy - wz), 2 * (xz + wy)],
+            [2 * (xy + wz), 1 - 2 * (xx + zz), 2 * (yz - wx)],
+            [2 * (xz - wy), 2 * (yz + wx), 1 - 2 * (xx + yy)],
+        ],
+        dtype=float,
+    )
+
+def matrix_to_quat(R):
+    t = float(np.trace(R))
+    if t > 0.0:
+        s = np.sqrt(t + 1.0) * 2.0
+        w = 0.25 * s
+        x = (R[2, 1] - R[1, 2]) / s
+        y = (R[0, 2] - R[2, 0]) / s
+        z = (R[1, 0] - R[0, 1]) / s
+    elif R[0, 0] > R[1, 1] and R[0, 0] > R[2, 2]:
+        s = np.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2]) * 2.0
+        w = (R[2, 1] - R[1, 2]) / s
+        x = 0.25 * s
+        y = (R[0, 1] + R[1, 0]) / s
+        z = (R[0, 2] + R[2, 0]) / s
+    elif R[1, 1] > R[2, 2]:
+        s = np.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2]) * 2.0
+        w = (R[0, 2] - R[2, 0]) / s
+        x = (R[0, 1] + R[1, 0]) / s
+        y = 0.25 * s
+        z = (R[1, 2] + R[2, 1]) / s
+    else:
+        s = np.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1]) * 2.0
+        w = (R[1, 0] - R[0, 1]) / s
+        x = (R[0, 2] + R[2, 0]) / s
+        y = (R[1, 2] + R[2, 1]) / s
+        z = 0.25 * s
+    return np.array([x, y, z, w], dtype=float)
+
+def swap_yz_transform(pos, quat):
+    m = np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0],
+        ],
+        dtype=float,
+    )
+    p2 = m @ pos
+    r = quat_to_matrix(quat)
+    r2 = m @ r @ m.T
+    q2 = matrix_to_quat(r2)
+    return p2, q2
 
 def set_timestamp(msg, ns):
     msg.timestamp.CopyFrom(
@@ -25,19 +83,21 @@ df = pd.read_csv("hmd_poses.csv")
 for _, r in df.iterrows():
     ts = ms_to_ns(r["unix_time"])
 
+    pos = np.array([r["pos_x"], r["pos_y"], r["pos_z"]], dtype=float)
+    quat = np.array([r["rot_x"], r["rot_y"], r["rot_z"], r["rot_w"]], dtype=float)
+    pos, quat = swap_yz_transform(pos, quat)
+
     msg = FrameTransform(
         parent_frame_id="world",
         child_frame_id="hmd",
-        translation=Vector3(x=r["pos_x"], y=r["pos_y"], z=r["pos_z"]),
-        rotation=Quaternion(
-            x=r["rot_x"], y=r["rot_y"], z=r["rot_z"], w=r["rot_w"]
-        ),
+        translation=Vector3(x=pos[0], y=pos[1], z=pos[2]),
+        rotation=Quaternion(x=quat[0], y=quat[1], z=quat[2], w=quat[3]),
     )
     set_timestamp(msg, ts)
     writer.write_message("/tf", msg, log_time=ts, publish_time=ts)
 
 
-import glob, cv2, numpy as np
+import glob, cv2
 import os
 import json
 from foxglove_schemas_protobuf.RawImage_pb2 import RawImage

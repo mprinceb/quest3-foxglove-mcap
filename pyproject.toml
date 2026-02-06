@@ -1,0 +1,17 @@
+[project]
+name = "quest3-foxglove-mcap"
+version = "0.1.0"
+description = "Convert Quest 3 capture data to Foxglove MCAP."
+readme = "axes_yz_swap.md"
+requires-python = ">=3.10"
+dependencies = [
+  "foxglove-schemas-protobuf==0.3.0",
+  "mcap==1.3.1",
+  "mcap-protobuf-support==0.5.4",
+  "numpy==2.2.6",
+  "opencv-python==4.13.0.92",
+  "pandas==2.3.3",
+]
+
+[tool.uv]
+dev-dependencies = []
