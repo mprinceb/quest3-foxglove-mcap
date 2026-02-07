@@ -114,7 +114,32 @@ def first_timestamp_ns(folder, ext):
     return ms_to_ns(ts_ms)
 
 
-def write_rgb(writer, folder, raw_topic, compressed_topic, frame_id, image_format_json):
+def _parse_resolution(value, src_w, src_h):
+    if value.lower() == "source":
+        return src_w, src_h
+    parts = value.lower().split("x")
+    if len(parts) != 2:
+        raise ValueError(f"Invalid resolution '{value}'. Use WIDTHxHEIGHT or 'source'.")
+    return int(parts[0]), int(parts[1])
+
+
+def _fit_resolution(src_w, src_h, target_w, target_h):
+    scale = min(target_w / src_w, target_h / src_h)
+    new_w = max(1, int(round(src_w * scale)))
+    new_h = max(1, int(round(src_h * scale)))
+    return new_w, new_h
+
+
+def write_rgb(
+    writer,
+    folder,
+    raw_topic,
+    compressed_topic,
+    frame_id,
+    image_format_json,
+    output_res,
+    include_raw,
+):
     fmt = json.load(open(image_format_json))
     width = int(fmt["width"])
     height = int(fmt["height"])
@@ -157,13 +182,20 @@ def write_rgb(writer, folder, raw_topic, compressed_topic, frame_id, image_forma
         i420 = i420.reshape((height * 3 // 2, width))
         bgr = cv2.cvtColor(i420, cv2.COLOR_YUV2BGR_I420)
 
-        if raw_topic:
+        out_w, out_h = _parse_resolution(output_res, width, height)
+        if (out_w, out_h) != (width, height):
+            out_w, out_h = _fit_resolution(width, height, out_w, out_h)
+            bgr = cv2.resize(bgr, (out_w, out_h), interpolation=cv2.INTER_AREA)
+        else:
+            out_w, out_h = width, height
+
+        if include_raw and raw_topic:
             msg = RawImage(
                 frame_id=frame_id,
-                width=width,
-                height=height,
+                width=out_w,
+                height=out_h,
                 encoding="bgr8",
-                step=width * 3,
+                step=out_w * 3,
                 data=bgr.tobytes(),
             )
             set_timestamp(msg, ts)
@@ -238,11 +270,11 @@ def write_calib(writer, json_path, topic, ts_ns):
     writer.write_message(topic, msg, log_time=ts_ns, publish_time=ts_ns)
 
 
-def build_output_path(data_dir, out_name):
+def build_output_path(root_dir, out_name):
     name = Path(out_name).name
     if not name.endswith(".mcap"):
         name = f"{name}.mcap"
-    out_dir = data_dir / "out"
+    out_dir = root_dir / "out"
     out_dir.mkdir(parents=True, exist_ok=True)
     return out_dir / name
 
@@ -251,13 +283,27 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dir", required=True, help="Input data directory")
     parser.add_argument("--out", required=True, help="Output file name")
+    parser.add_argument(
+        "--res",
+        default="source",
+        help=(
+            "Output resolution for RGB images. "
+            "Use WIDTHxHEIGHT or 'source'. "
+            "Common: 1280x1280, 1024x1024, 960x960, 720x720, 640x640."
+        ),
+    )
+    parser.add_argument(
+        "--no-raw",
+        action="store_true",
+        help="Do not write raw image topics (only compressed).",
+    )
     args = parser.parse_args()
 
     data_dir = Path(args.dir).expanduser().resolve()
     if not data_dir.exists():
         raise FileNotFoundError(f"Input directory not found: {data_dir}")
 
-    output_path = build_output_path(data_dir, args.out)
+    output_path = build_output_path(Path(__file__).resolve().parent, args.out)
     with open(output_path, "wb") as f:
         writer = Writer(f)
 
@@ -269,6 +315,8 @@ def main():
             "/cam_left/compressed",
             "camera_left",
             data_dir / "left_camera_image_format.json",
+            args.res,
+            not args.no_raw,
         )
         write_rgb(
             writer,
@@ -277,6 +325,8 @@ def main():
             "/cam_right/compressed",
             "camera_right",
             data_dir / "right_camera_image_format.json",
+            args.res,
+            not args.no_raw,
         )
 
         # write_depth(writer, data_dir / "left_depth", "/depth/left/image", 320)
