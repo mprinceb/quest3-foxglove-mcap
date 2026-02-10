@@ -1,0 +1,52 @@
+%YAML:1.0
+
+File.version: "1.0"
+
+Camera.type: "PinHole"
+
+# Left camera intrinsics from data/20260209_173413/left_camera_characteristics.json
+Camera.fx: 858.528930664
+Camera.fy: 858.528930664
+Camera.cx: 638.960571289
+Camera.cy: 643.053039551
+
+# Distortion not provided in capture metadata; start with zero-distortion model.
+Camera.k1: 0.0
+Camera.k2: 0.0
+Camera.p1: 0.0
+Camera.p2: 0.0
+Camera.k3: 0.0
+
+Camera.width: 1280
+Camera.height: 1280
+
+# Derived from capture timestamps (approx 72 Hz).
+Camera.fps: 72.0
+
+# bf = fx * baseline_m, baseline from median right-left descriptor offset (~0.04603 m)
+Camera.bf: 39.526
+
+# Images exported as mono PNG.
+Camera.RGB: 0
+
+ThDepth: 40.0
+DepthMapFactor: 1.0
+
+# ORB extractor defaults tuned for high-res fisheye-like views.
+ORBextractor.nFeatures: 1800
+ORBextractor.scaleFactor: 1.2
+ORBextractor.nLevels: 8
+ORBextractor.iniThFAST: 20
+ORBextractor.minThFAST: 7
+
+# Viewer
+Viewer.KeyFrameSize: 0.05
+Viewer.KeyFrameLineWidth: 1
+Viewer.GraphLineWidth: 0.9
+Viewer.PointSize: 2
+Viewer.CameraSize: 0.08
+Viewer.CameraLineWidth: 3
+Viewer.ViewpointX: 0
+Viewer.ViewpointY: -0.7
+Viewer.ViewpointZ: -1.8
+Viewer.ViewpointF: 500

@@ -9,3 +9,7 @@ left_camera_characteristics.json
 right_camera_characteristics.json
 *.mcap
 data/
+
+__pycache__
+slam/results/
+slam/**/__pycache__/
