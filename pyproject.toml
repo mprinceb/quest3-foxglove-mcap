@@ -14,5 +14,10 @@ dependencies = [
   "pandas==2.3.3",
 ]
 
+[project.optional-dependencies]
+open3d = [
+  "open3d>=0.18.0",
+]
+
 [tool.uv]
 dev-dependencies = []

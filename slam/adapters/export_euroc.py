@@ -1,30 +1,4 @@
-#!/usr/bin/env python3
-"""Export Quest 3 capture session to an EuRoC-style dataset layout.
-
-Inputs expected under session dir:
-- left_camera_raw/*.yuv
-- right_camera_raw/*.yuv
-- imu.csv
-- hmd_poses.csv
-- *_camera_image_format.json
-- *_camera_characteristics.json
-- optional depth folders and descriptors
-
-Output layout:
-<out>/mav0/
-  cam0/data/*.png
-  cam0/data.csv
-  cam0/sensor.yaml
-  cam1/data/*.png
-  cam1/data.csv
-  cam1/sensor.yaml
-  imu0/data.csv
-  imu0/sensor.yaml
-  depth0|depth1/data/*.png (optional)
-  depth0|depth1/data.csv (optional)
-  state_groundtruth_estimate0/tum.txt
-  meta/session_summary.json
-"""
+"""Export Quest 3 capture session to an EuRoC-style dataset layout."""
 
 from __future__ import annotations
 
@@ -32,69 +6,62 @@ import argparse
 import csv
 import json
 import math
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Literal
 
 import cv2
 import numpy as np
+
+from slam.core.quest_dataset import (
+    list_ts_files,
+    load_csv_rows,
+    load_depth_raw,
+    load_json,
+    ms_to_ns,
+    yuv420_888_to_bgr,
+    yuv420_888_to_y,
+)
+
+
+ImageMode = Literal["mono", "rgb"]
+
+
+@dataclass
+class EurocExportSummary:
+    session_dir: str
+    image_mode: ImageMode
+    stereo_total_left: int
+    stereo_total_right: int
+    stereo_common: int
+    stereo_exported: int
+    stereo_rate_hz_median: float
+    imu_samples: int
+    imu_rate_hz_median: float
+    hmd_rows: int
+    depth_exported: dict[str, int]
+    right_minus_left_baseline_median_m: list[float]
+    right_minus_left_baseline_std_m: list[float]
+    baseline_norm_m: float
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Export Quest 3 session to EuRoC-style dataset")
     parser.add_argument("--session-dir", required=True, help="Input session dir, e.g. data/20260209_173413")
     parser.add_argument("--out-dir", required=True, help="Output dataset directory")
-    parser.add_argument(
-        "--max-frames",
-        type=int,
-        default=0,
-        help="Limit stereo frames for quick tests (0 = all)",
-    )
+    parser.add_argument("--max-frames", type=int, default=0, help="Limit stereo frames for quick tests (0 = all)")
     parser.add_argument(
         "--include-depth",
         action="store_true",
         help="Export left/right depth .raw into 16-bit PNG sequences",
     )
+    parser.add_argument(
+        "--image-mode",
+        choices=["mono", "rgb"],
+        default="mono",
+        help="Stereo image export mode. mono uses Y-plane, rgb decodes YUV to BGR PNG.",
+    )
     return parser.parse_args()
-
-
-def load_json(path: Path) -> dict[str, Any]:
-    with path.open() as f:
-        return json.load(f)
-
-
-def load_csv(path: Path) -> list[dict[str, str]]:
-    with path.open(newline="") as f:
-        reader = csv.DictReader(f)
-        return list(reader)
-
-
-def ms_to_ns(ts_ms: int) -> int:
-    return ts_ms * 1_000_000
-
-
-def read_y_plane(yuv_path: Path, fmt: dict[str, Any]) -> np.ndarray:
-    width = int(fmt["width"])
-    height = int(fmt["height"])
-    y_row_stride = int(fmt["planes"][0]["rowStride"])
-    y_size = int(fmt["planes"][0]["bufferSize"])
-
-    data = np.fromfile(yuv_path, np.uint8)
-    if data.size < y_size:
-        raise ValueError(f"YUV file too small: {yuv_path} ({data.size} < {y_size})")
-
-    y = data[:y_size].reshape((height, y_row_stride))[:, :width]
-    return y
-
-
-def list_ts_files(folder: Path, suffix: str) -> dict[int, Path]:
-    out: dict[int, Path] = {}
-    for p in folder.glob(f"*.{suffix}"):
-        try:
-            ts = int(p.stem)
-        except ValueError:
-            continue
-        out[ts] = p
-    return out
 
 
 def ensure_dir(path: Path) -> None:
@@ -152,8 +119,7 @@ def write_imu_csv(path: Path, imu_rows: list[dict[str, str]]) -> tuple[int, floa
                 "a_RS_S_z [m s^-2]",
             ]
         )
-        for rec in records:
-            w.writerow(rec)
+        w.writerows(records)
 
     if len(records) < 2:
         return len(records), 0.0
@@ -167,8 +133,8 @@ def write_imu_csv(path: Path, imu_rows: list[dict[str, str]]) -> tuple[int, floa
 
 
 def infer_right_baseline(session_dir: Path) -> tuple[list[float], list[float]]:
-    left_desc = load_csv(session_dir / "left_depth_descriptors.csv")
-    right_desc = load_csv(session_dir / "right_depth_descriptors.csv")
+    left_desc = load_csv_rows(session_dir / "left_depth_descriptors.csv")
+    right_desc = load_csv_rows(session_dir / "right_depth_descriptors.csv")
 
     right_by_ts = {int(float(r["timestamp_ms"])): r for r in right_desc if "timestamp_ms" in r}
 
@@ -200,43 +166,48 @@ def infer_right_baseline(session_dir: Path) -> tuple[list[float], list[float]]:
         return [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]
 
     arr = np.array(vecs, dtype=float)
-    med = np.median(arr, axis=0).tolist()
-    std = np.std(arr, axis=0).tolist()
-    return med, std
+    return np.median(arr, axis=0).tolist(), np.std(arr, axis=0).tolist()
 
 
-def write_cam_yaml(path: Path, name: str, intr: dict[str, float], width: int, height: int, t_bs: list[float]) -> None:
+def write_cam_yaml(
+    path: Path,
+    name: str,
+    intr: dict[str, float],
+    width: int,
+    height: int,
+    t_bs: list[float],
+    rate_hz: float,
+) -> None:
     yaml = f"""sensor_type: camera
-+comment: {name}
-+T_BS:
-+  rows: 4
-+  cols: 4
-+  data: [1.0, 0.0, 0.0, {t_bs[0]:.9f}, 0.0, 1.0, 0.0, {t_bs[1]:.9f}, 0.0, 0.0, 1.0, {t_bs[2]:.9f}, 0.0, 0.0, 0.0, 1.0]
-+rate_hz: 72
-+resolution: [{width}, {height}]
-+camera_model: pinhole
-+intrinsics: [{intr['fx']:.9f}, {intr['fy']:.9f}, {intr['cx']:.9f}, {intr['cy']:.9f}]
-+distortion_model: radtan
-+distortion_coefficients: [0.0, 0.0, 0.0, 0.0]
-+"""
-    # Remove helper plus-prefix used to keep f-string readable.
-    path.write_text("\n".join(line[1:] if line.startswith("+") else line for line in yaml.splitlines()) + "\n")
+comment: {name}
+T_BS:
+  rows: 4
+  cols: 4
+  data: [1.0, 0.0, 0.0, {t_bs[0]:.9f}, 0.0, 1.0, 0.0, {t_bs[1]:.9f}, 0.0, 0.0, 1.0, {t_bs[2]:.9f}, 0.0, 0.0, 0.0, 1.0]
+rate_hz: {rate_hz:.6f}
+resolution: [{width}, {height}]
+camera_model: pinhole
+intrinsics: [{intr['fx']:.9f}, {intr['fy']:.9f}, {intr['cx']:.9f}, {intr['cy']:.9f}]
+distortion_model: radtan
+distortion_coefficients: [0.0, 0.0, 0.0, 0.0]
+"""
+    path.write_text(yaml)
 
 
 def write_imu_yaml(path: Path, rate_hz: float) -> None:
     yaml = f"""sensor_type: imu
-+comment: Quest3 head IMU (gyro+accel) exported from imu.csv
-+T_BS:
-+  rows: 4
-+  cols: 4
-+  data: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
-+rate_hz: {rate_hz:.3f}
-+gyroscope_noise_density: 0.001
-+gyroscope_random_walk: 0.0001
-+accelerometer_noise_density: 0.01
-+accelerometer_random_walk: 0.001
-+"""
-    path.write_text("\n".join(line[1:] if line.startswith("+") else line for line in yaml.splitlines()) + "\n")
+comment: Quest3 head IMU (gyro+accel) exported from imu.csv
+T_BS:
+  rows: 4
+  cols: 4
+  data: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+rate_hz: {rate_hz:.6f}
+gyroscope_noise_density: 0.001
+gyroscope_random_walk: 0.0001
+accelerometer_noise_density: 0.01
+accelerometer_random_walk: 0.001
+"""
+    path.write_text(yaml)
 
 
 def write_hmd_tum(path: Path, rows: list[dict[str, str]]) -> int:
@@ -260,8 +231,8 @@ def write_hmd_tum(path: Path, rows: list[dict[str, str]]) -> int:
 
 
 def export_depth(session_dir: Path, out_mav0: Path, side: str) -> int:
-    desc_rows = load_csv(session_dir / f"{side}_depth_descriptors.csv")
-    by_ts = {}
+    desc_rows = load_csv_rows(session_dir / f"{side}_depth_descriptors.csv")
+    by_ts: dict[int, tuple[int, int]] = {}
     for r in desc_rows:
         try:
             by_ts[int(float(r["timestamp_ms"]))] = (int(float(r["width"])), int(float(r["height"])))
@@ -281,11 +252,10 @@ def export_depth(session_dir: Path, out_mav0: Path, side: str) -> int:
             continue
         if ts_ms not in by_ts:
             continue
-        w, h = by_ts[ts_ms]
-        depth = np.fromfile(raw_path, dtype=np.uint16)
-        if depth.size < w * h:
+        width, height = by_ts[ts_ms]
+        depth = load_depth_raw(raw_path, width, height)
+        if depth is None:
             continue
-        depth = depth[: w * h].reshape((h, w))
         ts_ns = ms_to_ns(ts_ms)
         name = f"{ts_ns}.png"
         if not cv2.imwrite(str(out_dir / name), depth):
@@ -297,10 +267,25 @@ def export_depth(session_dir: Path, out_mav0: Path, side: str) -> int:
     return written
 
 
-def main() -> int:
-    args = parse_args()
-    session_dir = Path(args.session_dir).expanduser().resolve()
-    out_dir = Path(args.out_dir).expanduser().resolve()
+def _median_rate_hz_from_ms_timestamps(timestamps_ms: list[int]) -> float:
+    if len(timestamps_ms) < 2:
+        return 0.0
+    dts = [b - a for a, b in zip(timestamps_ms, timestamps_ms[1:]) if b > a]
+    if not dts:
+        return 0.0
+    return 1000.0 / float(np.median(np.array(dts, dtype=float)))
+
+
+def export_session_to_euroc(
+    session_dir: Path,
+    out_dir: Path,
+    *,
+    max_frames: int = 0,
+    include_depth: bool = False,
+    image_mode: ImageMode = "mono",
+) -> EurocExportSummary:
+    session_dir = session_dir.expanduser().resolve()
+    out_dir = out_dir.expanduser().resolve()
 
     if not session_dir.exists():
         raise FileNotFoundError(f"Session dir not found: {session_dir}")
@@ -310,18 +295,20 @@ def main() -> int:
     left_chars = load_json(session_dir / "left_camera_characteristics.json")
     right_chars = load_json(session_dir / "right_camera_characteristics.json")
 
-    imu_rows = load_csv(session_dir / "imu.csv")
-    hmd_rows = load_csv(session_dir / "hmd_poses.csv")
+    imu_rows = load_csv_rows(session_dir / "imu.csv")
+    hmd_rows = load_csv_rows(session_dir / "hmd_poses.csv")
 
     left_yuv = list_ts_files(session_dir / "left_camera_raw", "yuv")
     right_yuv = list_ts_files(session_dir / "right_camera_raw", "yuv")
 
     common_ts = sorted(set(left_yuv) & set(right_yuv))
-    if args.max_frames > 0:
-        common_ts = common_ts[: args.max_frames]
+    if max_frames > 0:
+        common_ts = common_ts[:max_frames]
 
     if not common_ts:
         raise RuntimeError("No matched stereo timestamps found")
+
+    stereo_rate_hz = _median_rate_hz_from_ms_timestamps(common_ts)
 
     out_mav0 = out_dir / "mav0"
     cam0_data = out_mav0 / "cam0" / "data"
@@ -336,15 +323,17 @@ def main() -> int:
     cam0_rows: list[tuple[int, str]] = []
     cam1_rows: list[tuple[int, str]] = []
 
+    decode = yuv420_888_to_y if image_mode == "mono" else yuv420_888_to_bgr
+
     for i, ts_ms in enumerate(common_ts):
-        y0 = read_y_plane(left_yuv[ts_ms], left_fmt)
-        y1 = read_y_plane(right_yuv[ts_ms], right_fmt)
+        im0 = decode(left_yuv[ts_ms], left_fmt)
+        im1 = decode(right_yuv[ts_ms], right_fmt)
 
         ts_ns = ms_to_ns(ts_ms)
         name = f"{ts_ns}.png"
 
-        ok0 = cv2.imwrite(str(cam0_data / name), y0)
-        ok1 = cv2.imwrite(str(cam1_data / name), y1)
+        ok0 = cv2.imwrite(str(cam0_data / name), im0)
+        ok1 = cv2.imwrite(str(cam1_data / name), im1)
         if not (ok0 and ok1):
             continue
 
@@ -375,6 +364,7 @@ def main() -> int:
         int(l_res["width"]),
         int(l_res["height"]),
         [0.0, 0.0, 0.0],
+        stereo_rate_hz,
     )
     write_cam_yaml(
         out_mav0 / "cam1" / "sensor.yaml",
@@ -382,39 +372,63 @@ def main() -> int:
         r_intr,
         int(r_res["width"]),
         int(r_res["height"]),
-        [
-            float(right_baseline_med[0]),
-            float(right_baseline_med[1]),
-            float(right_baseline_med[2]),
-        ],
+        [float(right_baseline_med[0]), float(right_baseline_med[1]), float(right_baseline_med[2])],
+        stereo_rate_hz,
     )
     write_imu_yaml(out_mav0 / "imu0" / "sensor.yaml", imu_rate_hz)
 
     depth_written = {"left": 0, "right": 0}
-    if args.include_depth:
+    if include_depth:
         depth_written["left"] = export_depth(session_dir, out_mav0, "left")
         depth_written["right"] = export_depth(session_dir, out_mav0, "right")
 
-    summary = {
-        "session_dir": str(session_dir),
-        "stereo_total_left": len(left_yuv),
-        "stereo_total_right": len(right_yuv),
-        "stereo_common": len(common_ts),
-        "stereo_exported": len(cam0_rows),
-        "imu_samples": imu_count,
-        "imu_rate_hz_median": imu_rate_hz,
-        "hmd_rows": hmd_count,
-        "depth_exported": depth_written,
-        "right_minus_left_baseline_median_m": right_baseline_med,
-        "right_minus_left_baseline_std_m": right_baseline_std,
-        "baseline_norm_m": math.sqrt(sum(float(v) * float(v) for v in right_baseline_med)),
-    }
+    summary = EurocExportSummary(
+        session_dir=str(session_dir),
+        image_mode=image_mode,
+        stereo_total_left=len(left_yuv),
+        stereo_total_right=len(right_yuv),
+        stereo_common=len(common_ts),
+        stereo_exported=len(cam0_rows),
+        stereo_rate_hz_median=stereo_rate_hz,
+        imu_samples=imu_count,
+        imu_rate_hz_median=imu_rate_hz,
+        hmd_rows=hmd_count,
+        depth_exported=depth_written,
+        right_minus_left_baseline_median_m=right_baseline_med,
+        right_minus_left_baseline_std_m=right_baseline_std,
+        baseline_norm_m=math.sqrt(sum(float(v) * float(v) for v in right_baseline_med)),
+    )
 
-    (meta_dir / "session_summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+    (meta_dir / "session_summary.json").write_text(json.dumps(summary.__dict__, indent=2) + "\n")
+    return summary
 
+
+def add_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
+    parser = subparsers.add_parser("export-euroc", help="Export Quest session into EuRoC layout")
+    parser.add_argument("--session-dir", required=True)
+    parser.add_argument("--out-dir", required=True)
+    parser.add_argument("--max-frames", type=int, default=0)
+    parser.add_argument("--include-depth", action="store_true")
+    parser.add_argument("--image-mode", choices=["mono", "rgb"], default="mono")
+    return parser
+
+
+def run_cli(args: argparse.Namespace) -> int:
+    summary = export_session_to_euroc(
+        Path(args.session_dir),
+        Path(args.out_dir),
+        max_frames=args.max_frames,
+        include_depth=args.include_depth,
+        image_mode=args.image_mode,
+    )
     print("Export complete")
-    print(json.dumps(summary, indent=2))
+    print(json.dumps(summary.__dict__, indent=2))
     return 0
+
+
+def main() -> int:
+    args = parse_args()
+    return run_cli(args)
 
 
 if __name__ == "__main__":

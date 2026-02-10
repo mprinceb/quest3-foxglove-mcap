@@ -1,72 +1,63 @@
-# SLAM Implementation Bootstrap
+# SLAM Python Module
 
-This folder contains the first runnable SLAM ingestion pipeline for Quest 3 sessions.
+`slam/` is now a Python module with a single CLI entrypoint.
+
+## Module Structure
+- `slam/cli.py`: unified CLI (`quest-slam`)
+- `slam/core/`: capture QA + end-to-end pipeline orchestration
+- `slam/adapters/`: `data -> EuRoC`, `EuRoC -> MCAP`, pose exports
+- `slam/algorithms/`: in-repo estimators (Depth-PnP, Open3D) + external runner helpers
+- `slam/eval/`: trajectory evaluation helpers
+- `slam/docs/`: contracts, RTAB-map notes, learning guides
+
+## CLI Entry Point
+Primary entrypoint:
+```bash
+uv run python -m slam.cli --help
+```
 
 ## Single Command Pipeline (Data -> EuRoC -> MCAP)
-This is now the default entrypoint and follows the conversion flow described in Foxglove's EuRoC article:
-https://foxglove.dev/blog/converting-euroc-mav-dataset-to-mcap
-
 ```bash
-bash slam/runners/run_data_to_euroc_to_mcap.sh data/20260209_173413 --include-depth
+uv run python -m slam.cli pipeline \
+  --session-dir data/20260209_173413 \
+  --include-depth \
+  --image-mode mono \
+  --estimator depth_pnp
 ```
 
-What it does:
-1. validates the capture;
-2. exports EuRoC layout under `slam/results/pipeline_<session>/euroc`;
-3. runs baseline depth+PnP VO (unless disabled);
-4. converts EuRoC output to ROS2-profile MCAP for Foxglove.
+Key options:
+- `--image-mode mono|rgb`: choose grayscale or color image export/publishing
+- `--estimator none|depth_pnp|open3d`: estimator before MCAP packaging
+- `--max-frames N`: smoke-test limit
 
-Final artifact:
+Output:
 - `slam/results/pipeline_<session>/<session>_slam.mcap`
 
-Dependency note:
-- ROS2-profile MCAP writing uses `mcap-ros2-support` (declared in `pyproject.toml`).
-
-RTAB-map quickstart:
+## Common Subcommands
 ```bash
-bash slam/runners/run_rtabmap_from_mcap.sh \
-  slam/results/pipeline_<session>/<session>_slam.mcap
+uv run python -m slam.cli check-capture --session-dir data/20260209_173413
+uv run python -m slam.cli export-euroc --session-dir data/20260209_173413 --out-dir slam/results/euroc_run --image-mode rgb
+uv run python -m slam.cli euroc-to-mcap --euroc-dir slam/results/euroc_run --out slam/results/euroc_run/run.mcap --image-mode rgb
+uv run python -m slam.cli run-depth-pnp --session-dir data/20260209_173413 --out-tum slam/results/depth_pnp.tum.txt
+uv run --with open3d python -m slam.cli run-open3d-rgbd --euroc-dir slam/results/euroc_run --out-tum slam/results/open3d.tum.txt
+uv run python -m slam.cli evaluate-evo --ref ref.tum.txt --est est.tum.txt --out-dir slam/results/eval
 ```
 
-## 1) Validate a Capture
+## External Algorithms
+To integrate ORB-SLAM3:
 ```bash
-uv run python slam/qa/check_capture.py --session-dir data/20260209_173413
+uv run python -m slam.cli orbslam3-config --euroc-dir slam/results/euroc_run --out-yaml slam/results/euroc_run/orbslam3.yaml --image-mode mono
+uv run python -m slam.cli run-orbslam3 --euroc-dir slam/results/euroc_run --mode stereo --config-yaml slam/results/euroc_run/orbslam3.yaml --results-dir slam/results/orbslam3
 ```
 
-## 2) Export to EuRoC-style Layout (Stereo + IMU)
-```bash
-uv run python slam/adapters/export_euroc.py \
-  --session-dir data/20260209_173413 \
-  --out-dir slam/results/euroc_20260209_173413 \
-  --include-depth
-```
-
-## 3) Export Reference Trajectories (TUM)
-```bash
-uv run python slam/adapters/export_tum.py \
-  --session-dir data/20260209_173413 \
-  --out-dir slam/results/euroc_20260209_173413/reference
-```
-
-## 4) Run ORB-SLAM3 Stereo
-Prerequisites:
-- ORB-SLAM3 built locally
-- `ORB_SLAM3_ROOT` set, or explicit `ORB_SLAM3_STEREO_BIN` and `ORB_VOCAB`
-
-```bash
-bash slam/runners/run_orbslam3_stereo.sh \
-  slam/results/euroc_20260209_173413
-```
-
-## 5) Run In-Repo Baseline VO (No External SLAM Dependency)
-This provides an immediate trajectory baseline from left camera + depth:
-```bash
-bash slam/runners/run_depth_pnp_vo.sh data/20260209_173413
-```
-Output goes to `slam/results/depth_pnp_vo_<session>.tum.txt`.
+Pinned external projects are added as git submodules in `third_party/`:
+- `ORB_SLAM3`
+- `open_vins`
+- `VINS-Fusion`
+- `basalt`
+- `rtabmap_ros`
 
 ## Notes
-- `export_euroc.py` exports grayscale PNG images from Y plane for fast stereo ingestion.
-- `cam1` translation in `sensor.yaml` is initialized from median depth-descriptor offset. Recalibrate before production use.
-- `imu0/sensor.yaml` noise values are placeholders and should be replaced after Allan variance/calibration.
-- `euroc_to_mcap.py` writes ROS2 message schemas (`sensor_msgs/Image`, `sensor_msgs/Imu`, `sensor_msgs/CameraInfo`, `geometry_msgs/PoseStamped`) so the MCAP is visualization-ready and closer to RTAB-map needs.
+- Camera/image metadata is read from each dataset run (`*_camera_characteristics.json`, `*_camera_image_format.json`).
+- Stereo baseline in `sensor.yaml` is metadata-derived and should be replaced by calibrated extrinsics for production.
+- Open3D is optional and may require `uv run --with open3d ...` depending on Python/platform wheels.

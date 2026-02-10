@@ -34,7 +34,7 @@ Working strategy:
 ## 4) File-Based Work Breakdown for Agents
 Use these repository additions and keep ownership boundaries strict.
 
-1. `slam/data_contract.md`
+1. `slam/docs/data_contract.md`
 - Define required topics, frames, units, and timestamp rules.
 - Include topic table for `/camera/left/*`, `/camera/right/*`, `/tf`, `/imu/head`, `/imu/left_controller`, `/imu/right_controller`.
 
@@ -45,13 +45,13 @@ Use these repository additions and keep ownership boundaries strict.
 3. `slam/adapters/export_tum.py`
 - Export trajectory for APE/RPE comparison with `evo`.
 
-4. `slam/runners/run_orbslam3_stereo.sh`
-- Repro script for ORB-SLAM3 stereo baseline.
+4. `uv run python -m slam.cli run-orbslam3 ...`
+- Repro CLI for ORB-SLAM3 stereo baseline.
 
-5. `slam/runners/run_openvins.sh` and `slam/runners/run_basalt.sh`
+5. `third_party/open_vins` and `third_party/basalt`
 - Stereo-inertial runs once IMU is available.
 
-6. `slam/eval/evaluate.sh`
+6. `uv run python -m slam.cli evaluate-evo ...`
 - Run `evo_ape` / `evo_rpe`, save plots and summary metrics.
 
 7. `slam/results/<algo>/<session>/`
@@ -118,7 +118,7 @@ If you need acceleration but it is unavailable, use provider-specific APIs or de
 - covariance fields and validity bits
 
 ## 8) Immediate Next Sprint (Execution Order)
-1. Keep `slam/pipeline_data_to_mcap.py` as the canonical single-command flow:
+1. Keep `uv run python -m slam.cli pipeline ...` as the canonical single-command flow:
    data session -> EuRoC export -> MCAP output.
 2. Ensure `slam/adapters/euroc_to_mcap.py` remains compatible with Foxglove visualization.
 3. Run ORB-SLAM3 stereo baseline and export estimated trajectory into the same MCAP.

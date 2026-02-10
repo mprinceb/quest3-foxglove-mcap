@@ -22,7 +22,7 @@ This repository is a small Python CLI for converting Quest 3 capture exports int
 - `uv run python main.py --dir data/<capture_dir> --out my_run --res 720x720`: run a conversion and write `out/my_run.mcap`.
 - `uv run python main.py --dir data/<capture_dir> --out my_run --no-raw`: generate compressed-image topics only.
 - `uv run python -m py_compile main.py script1.py`: quick syntax validation.
-- `bash slam/runners/run_data_to_euroc_to_mcap.sh data/<session_id> --include-depth`: run SLAM data pipeline (`data -> EuRoC -> MCAP`) for Foxglove/RTAB-map bringup.
+- `uv run python -m slam.cli pipeline --session-dir data/<session_id> --include-depth --image-mode mono`: run SLAM data pipeline (`data -> EuRoC -> MCAP`) for Foxglove/RTAB-map bringup.
 
 ## Coding Style & Naming Conventions
 - Follow PEP 8 with 4-space indentation and clear, short helper functions.

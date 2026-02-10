@@ -1,18 +1,18 @@
-#!/usr/bin/env python3
 """Export Quest 3 pose CSVs to TUM trajectory format."""
 
 from __future__ import annotations
 
 import argparse
-import csv
 from pathlib import Path
+
+from slam.core.quest_dataset import load_csv_rows
 
 
 def write_tum(input_csv: Path, output_txt: Path) -> int:
+    rows = load_csv_rows(input_csv)
     count = 0
-    with input_csv.open(newline="") as f_in, output_txt.open("w") as f_out:
-        r = csv.DictReader(f_in)
-        for row in r:
+    with output_txt.open("w") as f_out:
+        for row in rows:
             try:
                 t_s = float(row["unix_time"]) / 1000.0
                 px = float(row["pos_x"])
@@ -29,14 +29,9 @@ def write_tum(input_csv: Path, output_txt: Path) -> int:
     return count
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Export hmd/controller pose CSV to TUM format")
-    parser.add_argument("--session-dir", required=True)
-    parser.add_argument("--out-dir", required=True)
-    args = parser.parse_args()
-
-    session = Path(args.session_dir).expanduser().resolve()
-    out = Path(args.out_dir).expanduser().resolve()
+def export_session_to_tum(session_dir: Path, out_dir: Path) -> dict[str, int]:
+    session = session_dir.expanduser().resolve()
+    out = out_dir.expanduser().resolve()
     out.mkdir(parents=True, exist_ok=True)
 
     pairs = [
@@ -45,14 +40,39 @@ def main() -> int:
         (session / "right_controller_poses.csv", out / "right_controller.tum.txt"),
     ]
 
+    summary: dict[str, int] = {}
     for src, dst in pairs:
         if not src.exists():
             print(f"skip missing: {src}")
             continue
         count = write_tum(src, dst)
+        summary[dst.name] = count
         print(f"wrote {dst} ({count} rows)")
+    return summary
 
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Export hmd/controller pose CSV to TUM format")
+    parser.add_argument("--session-dir", required=True)
+    parser.add_argument("--out-dir", required=True)
+    return parser.parse_args()
+
+
+def add_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
+    parser = subparsers.add_parser("export-tum", help="Export HMD/controller poses to TUM text files")
+    parser.add_argument("--session-dir", required=True)
+    parser.add_argument("--out-dir", required=True)
+    return parser
+
+
+def run_cli(args: argparse.Namespace) -> int:
+    export_session_to_tum(Path(args.session_dir), Path(args.out_dir))
     return 0
+
+
+def main() -> int:
+    args = parse_args()
+    return run_cli(args)
 
 
 if __name__ == "__main__":
