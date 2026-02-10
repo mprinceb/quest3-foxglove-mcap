@@ -22,6 +22,12 @@ Final artifact:
 Dependency note:
 - ROS2-profile MCAP writing uses `mcap-ros2-support` (declared in `pyproject.toml`).
 
+RTAB-map quickstart:
+```bash
+bash slam/runners/run_rtabmap_from_mcap.sh \
+  slam/results/pipeline_<session>/<session>_slam.mcap
+```
+
 ## 1) Validate a Capture
 ```bash
 uv run python slam/qa/check_capture.py --session-dir data/20260209_173413

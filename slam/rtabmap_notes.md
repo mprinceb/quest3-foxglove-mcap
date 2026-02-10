@@ -30,6 +30,12 @@ Use your local `--show-args` output to set:
 - right camera info -> `/cam1/camera_info`
 - imu topic -> `/imu0`
 
+Convenience runner in this repo:
+```bash
+bash slam/runners/run_rtabmap_from_mcap.sh \
+  slam/results/pipeline_<session>/<session>_slam.mcap
+```
+
 ## Important Calibration Caveat
 `/cam1/camera_info` projection baseline currently uses a heuristic baseline magnitude inferred from exported metadata.
 Before production RTAB-map evaluation, replace this with calibrated stereo extrinsics from a proper calibration run.
