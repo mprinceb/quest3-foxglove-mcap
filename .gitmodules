@@ -1,0 +1,15 @@
+[submodule "third_party/ORB_SLAM3"]
+	path = third_party/ORB_SLAM3
+	url = https://github.com/UZ-SLAMLab/ORB_SLAM3.git
+[submodule "third_party/open_vins"]
+	path = third_party/open_vins
+	url = https://github.com/rpng/open_vins.git
+[submodule "third_party/VINS-Fusion"]
+	path = third_party/VINS-Fusion
+	url = https://github.com/HKUST-Aerial-Robotics/VINS-Fusion.git
+[submodule "third_party/basalt"]
+	path = third_party/basalt
+	url = https://github.com/VladyslavUsenko/basalt.git
+[submodule "third_party/rtabmap_ros"]
+	path = third_party/rtabmap_ros
+	url = https://github.com/introlab/rtabmap_ros.git
